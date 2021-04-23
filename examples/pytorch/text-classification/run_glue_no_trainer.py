@@ -1,18 +1,3 @@
-# coding=utf-8
-# Copyright 2021 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-""" Finetuning a 🤗 Transformers model for sequence classification on GLUE."""
 import argparse
 import logging
 import math
@@ -39,31 +24,11 @@ from transformers import (
     set_seed,
 )
 
-
 logger = logging.getLogger(__name__)
-
-task_to_keys = {
-    "cola": ("sentence", None),
-    "mnli": ("premise", "hypothesis"),
-    "mrpc": ("sentence1", "sentence2"),
-    "qnli": ("question", "sentence"),
-    "qqp": ("question1", "question2"),
-    "rte": ("sentence1", "sentence2"),
-    "sst2": ("sentence", None),
-    "stsb": ("sentence1", "sentence2"),
-    "wnli": ("sentence1", "sentence2"),
-}
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Finetune a transformers model on a text classification task")
-    parser.add_argument(
-        "--task_name",
-        type=str,
-        default=None,
-        help="The name of the glue task to train on.",
-        choices=list(task_to_keys.keys()),
-    )
+
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv or a json file containing the training data."
     )
@@ -115,6 +80,7 @@ def parse_args():
     )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=3, help="Total number of training epochs to perform.")
+    
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -142,8 +108,8 @@ def parse_args():
     args = parser.parse_args()
 
     # Sanity checks
-    if args.task_name is None and args.train_file is None and args.validation_file is None:
-        raise ValueError("Need either a task name or a training/validation file.")
+    if args.train_file is None and args.validation_file is None:
+        raise ValueError("Need a training/validation file.")
     else:
         if args.train_file is not None:
             extension = args.train_file.split(".")[-1]
@@ -156,7 +122,6 @@ def parse_args():
         os.makedirs(args.output_dir, exist_ok=True)
 
     return args
-
 
 def main():
     args = parse_args()
@@ -191,49 +156,39 @@ def main():
     # For CSV/JSON files, this script will use as labels the column called 'label' and as pair of sentences the
     # sentences in columns called 'sentence1' and 'sentence2' if such column exists or the first two columns not named
     # label if at least two columns are provided.
+    # CSV file format: sentence1, sentence 2, label
 
     # If the CSVs/JSONs contain only one non-label column, the script does single sentence classification on this
     # single column. You can easily tweak this behavior (see below)
 
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
-    if args.task_name is not None:
-        # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset("glue", args.task_name)
-    else:
-        # Loading the dataset from local csv or json file.
-        data_files = {}
-        if args.train_file is not None:
-            data_files["train"] = args.train_file
-        if args.validation_file is not None:
-            data_files["validation"] = args.validation_file
-        extension = (args.train_file if args.train_file is not None else args.valid_file).split(".")[-1]
-        raw_datasets = load_dataset(extension, data_files=data_files)
+
+    # Loading the dataset from local csv or json file.
+    data_files = {}
+    if args.train_file is not None:
+        data_files["train"] = args.train_file
+    if args.validation_file is not None:
+        data_files["validation"] = args.validation_file
+        
+    extension = (args.train_file if args.train_file is not None else args.valid_file).split(".")[-1]
+    raw_datasets = load_dataset(extension, data_files=data_files)
     # See more about loading any type of standard or custom dataset at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
     # Labels
-    if args.task_name is not None:
-        is_regression = args.task_name == "stsb"
-        if not is_regression:
-            label_list = raw_datasets["train"].features["label"].names
-            num_labels = len(label_list)
-        else:
-            num_labels = 1
+    # Trying to have good defaults here, don't hesitate to tweak to your needs.
+    is_regression = raw_datasets["train"].features["label"].dtype in ["float32", "float64"]
+    if is_regression:
+        num_labels = 1
     else:
-        # Trying to have good defaults here, don't hesitate to tweak to your needs.
-        is_regression = raw_datasets["train"].features["label"].dtype in ["float32", "float64"]
-        if is_regression:
-            num_labels = 1
-        else:
-            # A useful fast method:
-            # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.unique
-            label_list = raw_datasets["train"].unique("label")
-            label_list.sort()  # Let's sort it for determinism
-            num_labels = len(label_list)
+        # A useful fast method:
+        # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.unique
+        label_list = raw_datasets["train"].unique("label")
+        label_list.sort()  # Let's sort it for determinism
+        num_labels = len(label_list)
 
     # Load pretrained model and tokenizer
-    #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     config = AutoConfig.from_pretrained(args.model_name_or_path, num_labels=num_labels, finetuning_task=args.task_name)
@@ -244,19 +199,15 @@ def main():
         config=config,
     )
 
-    # Preprocessing the datasets
-    if args.task_name is not None:
-        sentence1_key, sentence2_key = task_to_keys[args.task_name]
+    # Again, we try to have some nice defaults but don't hesitate to tweak to your use case.
+    non_label_column_names = [name for name in raw_datasets["train"].column_names if name != "label"]
+    if "sentence1" in non_label_column_names and "sentence2" in non_label_column_names:
+        sentence1_key, sentence2_key = "sentence1", "sentence2"
     else:
-        # Again, we try to have some nice defaults but don't hesitate to tweak to your use case.
-        non_label_column_names = [name for name in raw_datasets["train"].column_names if name != "label"]
-        if "sentence1" in non_label_column_names and "sentence2" in non_label_column_names:
-            sentence1_key, sentence2_key = "sentence1", "sentence2"
+        if len(non_label_column_names) >= 2:
+            sentence1_key, sentence2_key = non_label_column_names[:2]
         else:
-            if len(non_label_column_names) >= 2:
-                sentence1_key, sentence2_key = non_label_column_names[:2]
-            else:
-                sentence1_key, sentence2_key = non_label_column_names[0], None
+            sentence1_key, sentence2_key = non_label_column_names[0], None
 
     # Some models have set the order of the labels to use, so let's make sure we do use it.
     label_to_id = None
@@ -378,6 +329,7 @@ def main():
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
+    
     # Only show the progress bar once on each machine.
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
@@ -415,26 +367,6 @@ def main():
         accelerator.wait_for_everyone()
         unwrapped_model = accelerator.unwrap_model(model)
         unwrapped_model.save_pretrained(args.output_dir, save_function=accelerator.save)
-
-    if args.task_name == "mnli":
-        # Final evaluation on mismatched validation set
-        eval_dataset = processed_datasets["validation_mismatched"]
-        eval_dataloader = DataLoader(
-            eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size
-        )
-        eval_dataloader = accelerator.prepare(eval_dataloader)
-
-        model.eval()
-        for step, batch in enumerate(eval_dataloader):
-            outputs = model(**batch)
-            predictions = outputs.logits.argmax(dim=-1)
-            metric.add_batch(
-                predictions=accelerator.gather(predictions),
-                references=accelerator.gather(batch["labels"]),
-            )
-
-        eval_metric = metric.compute()
-        logger.info(f"mnli-mm: {eval_metric}")
 
 
 if __name__ == "__main__":
